@@ -6,8 +6,6 @@ plugins:
   - serverless-iam-roles-per-function
   - serverless-reqvalidator-plugin
   - serverless-aws-documentation
-  - serverless-dynamodb-local
-  - serverless-offline
 
 
 provider:
