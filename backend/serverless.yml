@@ -24,18 +24,19 @@ provider:
     INDEX_NAME: UserIdIndex
     S3_BUCKET: serverless-todo-images777-${self:provider.stage}
     SIGNED_URL_EXPIRATION: 300
+    CONNECTIONS_TABLE: connections-${self:provider.stage}
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:Scan
+        - dynamodb:PutItem
+        - dynamodb:DeleteItem
+      Resource: arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
+
 
 custom:
-  serverless-offline:
-    port: 3003
-
-  dynamodb:
-    start:
-      port: 8000
-      inMemory: true
-      migrate: truenp
-    stages:
-      - ${self:provider.stage}
+  topicName: uploadImagesTopic-${self:provider.stage}
 
   documentation:
     api:
@@ -154,7 +155,6 @@ functions:
         Resource:
           - "*"
 
-
   GenerateUploadUrl:
     handler: src/lambda/http/generateUploadUrl.handler
     events:
@@ -179,6 +179,36 @@ functions:
           - "xray:PutTelemetryRecords"
         Resource:
           - "*"
+
+  SendUploadNotifications:
+    environment:
+      STAGE: ${self:provider.stage}
+      API_ID:
+        Ref: WebsocketsApi
+    handler: src/lambda/s3/sendNotifications.handler
+    events:
+      - sns:
+          arn:
+            Fn::Join:
+              - ':'
+              - - arn:aws:sns
+                - Ref: AWS::Region
+                - Ref: AWS::AccountId
+                - ${self:custom.topicName}
+          topicName: ${self:custom.topicName}
+
+  ConnectHandler:
+    handler: src/lambda/websocket/connect.handler
+    events:
+      - websocket:
+          route: $connect
+
+  DisconnectHandler:
+    handler: src/lambda/websocket/disconnect.handler
+    events:
+      - websocket:
+          route: $disconnect
+
 
 
 resources:
@@ -230,10 +260,27 @@ resources:
             Projection:
               ProjectionType: ALL
 
+    ConnectionsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.CONNECTIONS_TABLE}
+
     S3Bucket:
       Type: AWS::S3::Bucket
+      DependsOn: SNSTopicPolicy
       Properties:
         BucketName: ${self:provider.environment.S3_BUCKET}
+        NotificationConfiguration:
+          TopicConfigurations:
+            - Event: s3:ObjectCreated:Put
+              Topic: !Ref UploadImagesTopic
         CorsConfiguration:
           CorsRules:
             -
@@ -262,3 +309,28 @@ resources:
               Action: 's3:GetObject'
               Resource: 'arn:aws:s3:::${self:provider.environment.S3_BUCKET}/*'
         Bucket: !Ref S3Bucket
+
+    SNSTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                AWS: "*"
+              Action: sns:Publish
+              Resource:
+                !Ref UploadImagesTopic
+              Condition:
+                ArnLike:
+                  AWS:SourceArn: arn:aws:s3:::${self:provider.environment.S3_BUCKET}
+        Topics:
+          - !Ref UploadImagesTopic
+
+    UploadImagesTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        DisplayName: Upload image bucket topic
+        TopicName: ${self:custom.topicName}
+
